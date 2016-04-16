@@ -7,6 +7,15 @@ import collections
 from tinydb import TinyDB, Query
 import re
 
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine
+from sql_declarative import Factoid_history, Factoids, Seen, Tell
+
+engine = create_engine('sqlite:///reprap_database.db')
+session = sessionmaker()
+session.configure(bind=engine)
+s = session()
+
 prefix = "!"
 nick = 'omgthx'
 channels = ["#monkeyclub"]
@@ -63,8 +72,10 @@ async def future_race(nick, *commands):
 def msg(target, message):
     bot.send('PRIVMSG', target=target, message=message)
 
+
 def me(target, message):
-    msg(target, chr(1)+"ACTION "+message+chr(1))
+    msg(target, chr(1) + "ACTION " + message + chr(1))
+
 
 @bot.on('CLIENT_CONNECT')
 async def connect():
@@ -92,7 +103,6 @@ async def message(nick: str, target: str, message: str, user: str, host: str):
                          generalquery.name == nick)
     else:
         seentable.insert({"name": nick, "channel": target, "timestamp": str(arrow.utcnow()), "message": message})
-    print(message)
     message = message.strip()
     split_message = message.split()
     command = split_message.pop(0).lower()
@@ -103,34 +113,32 @@ async def message(nick: str, target: str, message: str, user: str, host: str):
     if command in awaiting_commands[nick]:
         awaiting_commands[nick][command].set_result((command, split_message))
 
+
 @bot.on('PRIVMSG')
 async def checkmessage(nick: str, target: str, message: str, user: str, host: str):
     message = message.strip()
     data = message.split()
-    if data[-1][-1] in ['!','?']:
-        if data[0].lower in ['omgthx', 'omgthx,','omgthx:']:
+    if data[-1][-1] in ['!', '?']:
+        if data[0].lower in ['omgthx', 'omgthx,', 'omgthx:']:
             del data[0]
-        print(data)
         data[-1] = data[-1][:-1]
         factlet = ' '.join(data)
         checkfactlet = factoids.contains(generalquery.item.test(lambda s: s.lower() == factlet.lower()))
         if checkfactlet:
             currentvalue = factoids.get(generalquery.item.test(lambda s: s.lower() == factlet.lower()))
-            #{"id":3029,"item":"JATMN","are":0,"value":"a whore","nick":"eogra7","dateset":"2014-01-01 02:46:22","locked":null,"lastsync":null}
+            # {"id":3029,"item":"JATMN","are":0,"value":"a whore","nick":"eogra7","dateset":"2014-01-01 02:46:22","locked":null,"lastsync":null}
             msg(target, "{} is {}".format(factlet, currentvalue['value']))
-        else:
-            print("you didn't find shit")
-    # elif data[1] in ["forget","Forget"]:
-    #     pass
+
 
 @bot.on('PRIVMSG')
-#omgthx(?:.)? ([^(is)]*) is (.*)$
+# omgthx(?:.)? ([^(is)]*) is (.*)$
 async def changefactoid(nick: str, target: str, message: str, user: str, host: str):
     message = message.strip()
     data = message.split()
     await check_forget(message, target)
-    if not await check_also(message,nick,target):
+    if not await check_also(message, nick, target):
         await check_is(data, message, nick, target)
+    await check_stats(nick, target, message, user, host, data)
 
 
 async def check_is(data, message, nick, target):
@@ -140,9 +148,11 @@ async def check_is(data, message, nick, target):
     factlet = m.group(1)
     info = m.group(2)
     checkfactlet = factoids.contains(generalquery.item.test(lambda s: s.lower() == factlet.lower()))
-    if checkfactlet:
+    results = s.query.filter(Factoids.item.ilike(factlet))
+    if results.count():
+        currentvalue = results.first()
         # {"id":3029,"item":"JATMN","are":0,"value":"a whore","nick":"eogra7","dateset":"2014-01-01 02:46:22","locked":null,"lastsync":null}
-        currentvalue = factoids.get(generalquery.item.test(lambda s: s.lower() == factlet.lower()))
+
         factoids.update(
                 {"value": "{} and also {}".format(info, currentvalue['value']), "nick": nick,
                  "dateset": str(arrow.utcnow())}, generalquery.item.test(lambda s: s.lower() == factlet.lower()))
@@ -162,7 +172,6 @@ async def check_forget(message, target):
     if checkfactlet:
         currentvalue = factoids.get(generalquery.item.test(lambda s: s.lower() == factlet.lower()))
         eids = currentvalue.eid
-        print([eids])
         factoids.remove(eids=[eids])
         msg(target, "I've forgotten {}".format(factlet))
 
@@ -174,25 +183,44 @@ async def check_also(message, nick, target):
     factlet = m.group(1)
     info = m.group(2)
     checkfactlet = factoids.contains(generalquery.item.test(lambda s: s.lower() == factlet.lower()))
-    print(checkfactlet)
     if checkfactlet:
         # {"id":3029,"item":"JATMN","are":0,"value":"a whore","nick":"eogra7","dateset":"2014-01-01 02:46:22","locked":null,"lastsync":null}
         currentvalue = factoids.get(generalquery.item.test(lambda s: s.lower() == factlet.lower()))
-        print(currentvalue)
-        #factoids.update({"value": "is {} and is also {}".format(info, currentvalue[0]['value']), "nick": nick,"dateset": str(arrow.utcnow())})
-        factoids.update({"value":" {} and also {}".format(info,currentvalue['value']), "nick": nick, "dateset": str(arrow.utcnow())}, generalquery.item.test(lambda s: s.lower() == factlet.lower()))
+        # factoids.update({"value": "is {} and is also {}".format(info, currentvalue[0]['value']), "nick": nick,"dateset": str(arrow.utcnow())})
+        factoids.update({"value": " {} and also {}".format(info, currentvalue['value']), "nick": nick,
+                         "dateset": str(arrow.utcnow())},
+                        generalquery.item.test(lambda s: s.lower() == factlet.lower()))
         msg(target, "I've updated {}".format(factlet))
         return True
+
+
+async def check_stats(nick: str, target: str, message: str, user: str, host: str, data):
+    m = re.search("omgthx,? stats ([^?.;]*)", message, re.IGNORECASE)
+    if m is None:
+        return
+    name = m.group(1)
+    try:
+        factoid_list = factoids.search(Query().nick.test(lambda s: s and s.lower() == name.lower()))
+    except Exception as e:
+        print(e)
+        return
+    for fact in factoid_list:
+        fact["dateset"] = arrow.get(fact["dateset"]).timestamp
+    sorted_facts = sorted(factoid_list, key=lambda k: k["dateset"], reverse=True)
+    joined_list = sorted_facts[:10] if len(sorted_facts) >= 10 else sorted_facts
+    joined_list = ", ".join(["{}".format(x["item"]) for x in joined_list])
+    msg(nick, "{} results found for {}. 10 most recent: {}".format(len(sorted_facts), name, joined_list))
 
 
 @command(1)
 async def seen(nick, target, user, host, data):
     search = Query()
-    print("nick:{} target:{} user:{} host:{} data:{}".format(nick, target, user, host, data))
+    # print("nick:{} target:{} user:{} host:{} data:{}".format(nick, target, user, host, data))
     if data[0][-1] == '?':
         x = data[0][0:-1]
         result = seentable.search(search.name.test(lambda s: s.lower() == x.lower()))
         me(target, '{}'.format(result[0]['message']))
+
 
 # @command(0, name=None)
 # async def multipart(nick, target, user, host, data):
